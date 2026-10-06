@@ -6,7 +6,7 @@ import path from 'path';
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  envPrefix: ['VITE_', 'Client'],
+  envPrefix: ['VITE_', 'Client', 'Root'],
   base: './',
   server: {
     host: '127.0.0.1',

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { FC, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -31,7 +31,7 @@ export function oauthSignIn(customClientId?: string) {
     redirect_uri: redirectUri,
     response_type: 'token',
     scope:
-      'https://www.googleapis.com/auth/drive.metadata.readonly https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/calendar.readonly',
+      'openid email profile https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/calendar.readonly',
     include_granted_scopes: 'true',
     state: 'google-drive-client-auth',
   };
@@ -48,21 +48,21 @@ export function oauthSignIn(customClientId?: string) {
   form.submit();
 }
 
-export const Login: React.FC = () => {
+export const Login: FC = () => {
   const [clientId, setClientId] = useState<string>(GOOGLE_CLIENT_ID);
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
 
   const handleGoogleSignIn = () => {
     const activeId = clientId.trim();
     if (!activeId) {
-      alert('Chybí Google Client ID. Zadejte jej níže nebo nastavte VITE_CLIENT_ID v souboru .env.');
+      alert('Chybí Google Client ID. Zadejte jej níže v nastavení nebo v souboru .env.');
       return;
     }
     oauthSignIn(activeId);
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-800">
+    <div className="min-h-screen flex flex-col bg-background text-foreground transition-colors">
       <Navbar />
 
       <main className="flex-1 flex items-center justify-center p-4 md:p-8">
@@ -70,20 +70,20 @@ export const Login: React.FC = () => {
           {/* Back link */}
           <Link
             to="/"
-            className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-slate-800 transition-colors"
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             <span>Zpět na úvodní stránku</span>
           </Link>
 
           {/* Login Card */}
-          <Card className="border-slate-200 shadow-xl bg-white overflow-hidden">
+          <Card className="border-border shadow-xl bg-card text-card-foreground overflow-hidden transition-colors">
             <CardHeader className="text-center pb-2 pt-6">
-              <CardTitle className="text-2xl font-bold text-slate-900 tracking-tight">
+              <CardTitle className="text-2xl font-bold text-card-foreground tracking-tight">
                 Přihlášení do Disku
               </CardTitle>
-              <CardDescription className="text-xs text-slate-500 mt-1">
-                Přihlaste se pomocí svého účtu Google a propojte desktopovou aplikaci s vaším cloudem.
+              <CardDescription className="text-xs text-muted-foreground mt-1">
+                Přihlaste se pomocí svého účtu Google a propojte aplikaci s vaším cloudem.
               </CardDescription>
             </CardHeader>
 
@@ -92,36 +92,25 @@ export const Login: React.FC = () => {
               <Button
                 onClick={handleGoogleSignIn}
                 size="lg"
-                className="w-full bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 shadow-sm font-medium gap-3 h-12 flex items-center justify-center transition-all hover:border-slate-400"
+                className="w-full bg-card hover:bg-accent text-card-foreground border border-input shadow-sm font-medium gap-3 h-12 flex items-center justify-center transition-all hover:border-ring"
               >
                 <span>Přihlásit se přes Google</span>
               </Button>
 
-              <div className="relative flex items-center justify-center">
-                <div className="border-t border-slate-200 w-full" />
-                <span className="bg-white px-3 text-xs text-slate-400 uppercase font-semibold tracking-wider absolute">
-                  nebo
-                </span>
-              </div>
-
               {/* Permissions list */}
-              <div className="rounded-xl bg-slate-50 p-4 border border-slate-200/80 space-y-2.5 text-xs text-slate-600">
-                <div className="font-semibold text-slate-800 flex items-center gap-1.5">
+              <div className="rounded-xl bg-muted p-4 border border-border space-y-2.5 text-xs text-muted-foreground">
+                <div className="font-semibold text-foreground flex items-center gap-1.5">
                   <ShieldCheck className="h-4 w-4 text-emerald-600" />
-                  <span>Vyžadovaná oprávnění aplikace:</span>
+                  <span>Požadovaná oprávnění:</span>
                 </div>
                 <div className="space-y-1.5 pl-5">
                   <div className="flex items-center gap-2">
-                    <CheckCircle className="h-3.5 w-3.5 text-blue-600" />
-                    <span>Čtení metadat souborů Google Disku</span>
+                    <CheckCircle className="h-3.5 w-3.5 text-primary" />
+                    <span>Plný přístup k souborům na Google Disku (čtení a zápis)</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <CheckCircle className="h-3.5 w-3.5 text-blue-600" />
-                    <span>Čtení položek kalendáře</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <CheckCircle className="h-3.5 w-3.5 text-blue-600" />
-                    <span>Správa vytvořených souborů aplikace</span>
+                    <CheckCircle className="h-3.5 w-3.5 text-primary" />
+                    <span>Základní profil a e-mail</span>
                   </div>
                 </div>
               </div>
@@ -131,34 +120,29 @@ export const Login: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setShowAdvanced(!showAdvanced)}
-                  className="text-xs text-slate-500 hover:text-slate-800 font-medium flex items-center gap-1 mx-auto"
+                  className="text-xs text-muted-foreground hover:text-foreground font-medium flex items-center gap-1 mx-auto"
                 >
                   <Lock className="h-3 w-3" />
                   <span>{showAdvanced ? 'Skrýt nastavení Client ID' : 'Nastavení OAuth Client ID'}</span>
                 </button>
 
                 {showAdvanced && (
-                  <div className="mt-3 p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2 text-xs">
-                    <label className="block font-medium text-slate-700">Google Client ID:</label>
+                  <div className="mt-3 p-3 bg-muted rounded-lg border border-border space-y-2 text-xs">
+                    <label className="block font-medium text-foreground">Google Client ID:</label>
                     <input
                       type="text"
                       value={clientId}
                       onChange={(e) => setClientId(e.target.value)}
-                      className="w-full p-2 bg-white border border-slate-300 rounded font-mono text-[11px] text-slate-800"
+                      className="w-full p-2 bg-background border border-input rounded font-mono text-[11px] text-foreground"
                     />
-                    <p className="text-[10px] text-slate-500">
-                      {import.meta.env.VITE_CLIENT_ID || import.meta.env.ClientID
-                        ? '✓ Hodnota byla úspěšně načtena ze souboru .env (VITE_CLIENT_ID).'
-                        : '⚠️ V souboru .env nebyla nalezena proměnná VITE_CLIENT_ID.'}
-                    </p>
                   </div>
                 )}
               </div>
             </CardContent>
           </Card>
 
-          {/* Privacy badge info */}
-          <div className="text-center text-[11px] text-slate-400 flex items-center justify-center gap-1.5">
+          {/* Privacy info */}
+          <div className="text-center text-[11px] text-muted-foreground flex items-center justify-center gap-1.5">
             <Info className="h-3.5 w-3.5" />
             <span>Přihlášení využívá bezpečný protokol OAuth 2.0 bez ukládání hesla.</span>
           </div>
