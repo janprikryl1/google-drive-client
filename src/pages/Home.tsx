@@ -6,10 +6,8 @@ import {
   ShieldCheck,
   Zap,
   HardDrive,
-  Sparkles,
   Cloud,
   FileCheck,
-  CheckCircle2,
   ArrowRight,
   LogOut,
 } from 'lucide-react';
@@ -38,16 +36,8 @@ export const Home: FC = () => {
           <div className="absolute bottom-0 right-1/4 -mb-16 w-72 h-72 rounded-full bg-emerald-500/10 blur-3xl pointer-events-none" />
 
           <div className="relative z-10 max-w-3xl space-y-6">
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/10 backdrop-blur border border-white/15 text-xs font-medium text-blue-200">
-              <Sparkles className="h-3.5 w-3.5 text-amber-300" />
-              <span>Mobilní systémy • Google Drive Client</span>
-            </div>
-
             <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight text-white leading-tight">
-              Správce Google Disku <br />
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-300 via-teal-200 to-amber-200">
-                Přímo na vaší ploše
-              </span>
+              Správce Google Disku
             </h1>
 
             <p className="text-base md:text-lg text-slate-300 max-w-2xl leading-relaxed">
@@ -60,23 +50,9 @@ export const Home: FC = () => {
               <div className="pt-2">
                 <div className="bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-5 max-w-lg space-y-4">
                   <div className="flex items-center gap-3.5">
-                    {user?.picture ? (
-                      <img
-                        src={user.picture}
-                        alt={user.name || 'User'}
-                        className="h-12 w-12 rounded-full object-cover ring-2 ring-white/30"
-                      />
-                    ) : (
-                      <div className="h-12 w-12 rounded-full bg-blue-500 text-white font-bold flex items-center justify-center text-lg shadow-inner">
-                        {user?.name ? user.name.slice(0, 2).toUpperCase() : 'U'}
-                      </div>
-                    )}
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="font-bold text-base text-white">{user?.name || 'Přihlášený uživatel'}</span>
-                        <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 px-2 py-0.5 rounded-full font-medium">
-                          Přihlášen
-                        </span>
                       </div>
                       <p className="text-xs text-blue-200">{user?.email}</p>
                     </div>
@@ -130,7 +106,7 @@ export const Home: FC = () => {
                 </div>
               </div>
             ) : (
-              /* If not logged in, show Call to Action buttons */
+              /* If not logged in, show Call to Action button */
               <div className="flex flex-wrap gap-4 pt-2">
                 <Button
                   asChild
@@ -140,19 +116,6 @@ export const Home: FC = () => {
                   <Link to="/login">
                     <LogIn className="h-5 w-5" />
                     <span>Přihlásit se k účtu</span>
-                  </Link>
-                </Button>
-
-                <Button
-                  asChild
-                  variant="outline"
-                  size="lg"
-                  className="bg-white/10 hover:bg-white/20 text-white border-white/20 backdrop-blur font-semibold gap-2 text-base px-6 h-12"
-                >
-                  <Link to="/files">
-                    <FolderOpen className="h-5 w-5 text-blue-300" />
-                    <span>Procházet soubory</span>
-                    <ArrowRight className="h-4 w-4 ml-1 opacity-70" />
                   </Link>
                 </Button>
               </div>
@@ -292,10 +255,6 @@ export const Home: FC = () => {
           </div>
 
           <div className="pt-4 border-t border-border flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-              <span>Připraveno pro použití v rámci předmětu Mobilní systémy</span>
-            </div>
             {token ? (
               <Button asChild className="bg-primary hover:bg-primary/90 text-primary-foreground gap-2 text-sm">
                 <Link to="/files">

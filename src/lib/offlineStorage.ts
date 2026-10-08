@@ -65,8 +65,7 @@ function openDB(): Promise<IDBDatabase> {
   });
 }
 
-// --- Cached Files ---
-
+// Cached Files
 export async function saveFileToCache(file: CachedFile): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -128,8 +127,7 @@ export async function getCachedFilesByFolder(folderId: string): Promise<CachedFi
   });
 }
 
-// --- Cached Folders ---
-
+// Cached Folders
 export async function saveFolderToCache(folder: CachedFolder): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -166,8 +164,7 @@ export async function getAllCachedFolders(): Promise<CachedFolder[]> {
   });
 }
 
-// --- Offline Upload Queue ---
-
+// Offline Upload Queue
 export async function addOfflineUpload(item: OfflineUploadItem): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {

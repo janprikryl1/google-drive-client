@@ -3,11 +3,11 @@
     "target": "ES2022",
     "module": "CommonJS",
     "outDir": "dist-electron",
-    "rootDir": "src/main",
+    "rootDir": "src/",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/main/**/*"]
+  "include": ["src/main.ts", "src/preload.ts", "src/types/electron.d.ts"]
 }

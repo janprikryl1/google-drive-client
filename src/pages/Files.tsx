@@ -8,50 +8,39 @@ import {
   FormEvent,
   ChangeEvent,
 } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import {
-  Folder,
-  FileText,
-  FileSpreadsheet,
-  Image as ImageIcon,
-  File,
-  Upload,
-  Download,
   Search,
   RefreshCw,
   Home as HomeIcon,
   LogIn,
   LayoutGrid,
   List,
-  X,
   LogOut,
-  ExternalLink,
-  Star,
-  Trash2,
-  FolderPlus,
   AlertCircle,
   FolderTree,
-  ChevronRight,
-  CheckSquare,
-  Square,
-  MinusSquare,
-  Loader2,
-  ArrowUp,
   Wifi,
   WifiOff,
-  HardDrive,
-  HardDriveDownload,
-  CheckCircle2,
-  AlertTriangle,
   Clock,
   RotateCw,
+  FolderSync,
+  X,
+  CheckCircle2,
+  Folder,
+  Upload,
+  FolderPlus,
+  Loader2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card, CardContent } from '@/components/ui/card';
-import { DriveItem } from '../types/DriveItem';
 import { useAuth } from '@/context/AuthContext';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import {
+  ExtendedDriveItem,
+  BreadcrumbItem,
+  ClipboardState,
+  OperationConflict,
+} from '@/types/DriveItem';
 import {
   saveFileToCache,
   getFileFromCache,
@@ -67,24 +56,33 @@ import {
   type OfflineUploadItem,
   type ConflictItem,
 } from '@/lib/offlineStorage';
+import {
+  searchFolderByName,
+  fetchFolderContents,
+  createDriveFolder,
+  uploadMultipartFile,
+  updateDriveFileContent,
+  downloadDriveBlob,
+  renameDriveItem,
+  copyDriveFile,
+  moveDriveItem,
+  trashDriveItem,
+  toggleDriveStar,
+  findConflictingFile,
+} from '@/services/driveService';
+import { useFileWatcher } from '@/hooks/useFileWatcher';
+import { FileBreadcrumbs } from '@/components/files/FileBreadcrumbs';
+import { FileSelectionBar } from '@/components/files/FileSelectionBar';
+import { FileClipboardBar } from '@/components/files/FileClipboardBar';
+import { FileGridView } from '@/components/files/FileGridView';
+import { FileListView } from '@/components/files/FileListView';
+import { CreateFolderModal } from '@/components/files/modals/CreateFolderModal';
+import { RenameModal } from '@/components/files/modals/RenameModal';
+import { ConflictModal } from '@/components/files/modals/ConflictModal';
 
 export const ROOT_FOLDER_NAME =
   import.meta.env.VITE_ROOT_FOLDER_NAME ||
-  import.meta.env.RootFolderName ||
-  'mobilni_systemy';
-
-type ExtendedDriveItem = DriveItem & {
-  starred?: boolean;
-  mimeType?: string;
-  webViewLink?: string;
-  modifiedTimeRaw?: string;
-  isOfflineQueue?: boolean;
-};
-
-type BreadcrumbItem = {
-  id: string;
-  name: string;
-};
+  import.meta.env.RootFolderName || '';
 
 export const Files: FC = () => {
   const { token, user, logout } = useAuth();
@@ -92,15 +90,29 @@ export const Files: FC = () => {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [files, setFiles] = useState<ExtendedDriveItem[]>([]);
   const [isLoadingFiles, setIsLoadingFiles] = useState<boolean>(false);
-  const [rootFolderId, setRootFolderId] = useState<string | null>(null);
+  const [rootFolderId, setRootFolderId] = useState<string | null>(() => {
+    return localStorage.getItem('last_root_folder_id');
+  });
   const [breadcrumbs, setBreadcrumbs] = useState<BreadcrumbItem[]>([]);
   const [folderNotFound, setFolderNotFound] = useState<boolean>(false);
   const [isCreatingRootFolder, setIsCreatingRootFolder] = useState<boolean>(false);
 
   // Connectivity and simulated offline
-  const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
+  const [isOnline, setIsOnline] = useState<boolean>(() => {
+    if (typeof window !== 'undefined' && window.electronAPI) return true;
+    return typeof navigator !== 'undefined' ? navigator.onLine : true;
+  });
   const [isSimulatedOffline, setIsSimulatedOffline] = useState<boolean>(false);
   const effectiveOffline = !isOnline || isSimulatedOffline;
+
+  const toggleOffline = () => {
+    if (effectiveOffline) {
+      setIsOnline(true);
+      setIsSimulatedOffline(false);
+    } else {
+      setIsSimulatedOffline(true);
+    }
+  };
 
   // Cache & sync state
   const [cachedFileIds, setCachedFileIds] = useState<Set<string>>(new Set());
@@ -119,10 +131,22 @@ export const Files: FC = () => {
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadProgressText, setUploadProgressText] = useState<string>('');
 
-  // Folder creation modal state (only for folder name)
+  // Folder creation modal state
   const [showFolderModal, setShowFolderModal] = useState<boolean>(false);
   const [newFolderName, setNewFolderName] = useState<string>('');
   const [isSavingFolder, setIsSavingFolder] = useState<boolean>(false);
+
+  // Clipboard state (Copy / Cut / Paste)
+  const [clipboard, setClipboard] = useState<ClipboardState>(null);
+  const [isProcessingPaste, setIsProcessingPaste] = useState<boolean>(false);
+
+  // Rename modal state
+  const [renameTarget, setRenameTarget] = useState<ExtendedDriveItem | null>(null);
+  const [renameInputValue, setRenameInputValue] = useState<string>('');
+  const [isRenaming, setIsRenaming] = useState<boolean>(false);
+
+  // Operation conflict state
+  const [opConflict, setOpConflict] = useState<OperationConflict | null>(null);
 
   const currentFolder =
     breadcrumbs.length > 0
@@ -151,12 +175,8 @@ export const Files: FC = () => {
 
   // Network event listeners
   useEffect(() => {
-    const handleOnline = () => {
-      setIsOnline(true);
-    };
-    const handleOffline = () => {
-      setIsOnline(false);
-    };
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
@@ -166,12 +186,17 @@ export const Files: FC = () => {
     };
   }, []);
 
-  // Fetch files located inside a specific folder ID (handles both online & offline)
+  // Fetch files in active folder
   const fetchFilesInFolder = useCallback(
     async (folderId: string) => {
+      if (!token) {
+        setIsLoadingFiles(false);
+        setFiles([]);
+        return;
+      }
+
       setIsLoadingFiles(true);
 
-      // OFFLINE MODE: Load items directly from IndexedDB
       if (effectiveOffline) {
         try {
           const cachedItems = await getCachedFilesByFolder(folderId);
@@ -215,102 +240,38 @@ export const Files: FC = () => {
 
           setFiles(offlineList);
         } catch (err) {
-          console.error('Chyba při čtení lokální keše:', err);
+          console.error('Chyba při čtení keše:', err);
         } finally {
           setIsLoadingFiles(false);
         }
         return;
       }
 
-      // ONLINE MODE: Fetch from Google Drive API
-      if (!token) {
-        setIsLoadingFiles(false);
-        return;
-      }
-
       try {
-        const filesQuery = `'${folderId}' in parents and trashed = false`;
-        const filesRes = await fetch(
-          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-            filesQuery
-          )}&pageSize=100&fields=files(id,name,mimeType,size,modifiedTime,starred,webViewLink)&orderBy=folder,name`,
-          {
-            headers: { Authorization: `Bearer ${token}` },
-          }
-        );
+        const driveItems = await fetchFolderContents(token, folderId);
+        const queue = await getOfflineUploads();
+        const folderQueue = queue.filter((q) => q.folderId === folderId);
 
-        if (filesRes.ok) {
-          const filesData = await filesRes.json();
-          const queue = await getOfflineUploads();
-          const folderQueue = queue.filter((q) => q.folderId === folderId);
+        const merged: ExtendedDriveItem[] = [
+          ...folderQueue.map((q) => ({
+            id: q.queueId,
+            name: q.name,
+            type: q.mimeType.startsWith('image/')
+              ? ('image' as const)
+              : q.name.endsWith('.xlsx') || q.name.endsWith('.csv')
+              ? ('spreadsheet' as const)
+              : ('document' as const),
+            size: `${(q.size / 1024).toFixed(0)} KB`,
+            modified: 'Čeká na odeslání',
+            mimeType: q.mimeType,
+            isOfflineQueue: true,
+          })),
+          ...driveItems,
+        ];
 
-          const parsedFiles: ExtendedDriveItem[] = [
-            ...folderQueue.map((q) => ({
-              id: q.queueId,
-              name: q.name,
-              type: q.mimeType.startsWith('image/')
-                ? ('image' as const)
-                : q.name.endsWith('.xlsx') || q.name.endsWith('.csv')
-                ? ('spreadsheet' as const)
-                : ('document' as const),
-              size: `${(q.size / 1024).toFixed(0)} KB`,
-              modified: 'Čeká na odeslání',
-              mimeType: q.mimeType,
-              isOfflineQueue: true,
-            })),
-            ...(filesData.files || []).map((f: any) => {
-              let itemType: DriveItem['type'] = 'document';
-              if (f.mimeType === 'application/vnd.google-apps.folder') {
-                itemType = 'folder';
-              } else if (
-                f.mimeType?.includes('spreadsheet') ||
-                f.name.endsWith('.xlsx') ||
-                f.name.endsWith('.csv')
-              ) {
-                itemType = 'spreadsheet';
-              } else if (
-                f.mimeType?.startsWith('image/') ||
-                f.name.match(/\.(png|jpg|jpeg|gif|webp|svg)$/i)
-              ) {
-                itemType = 'image';
-              }
-
-              let formattedSize: string | undefined;
-              if (f.size) {
-                const bytes = parseInt(f.size, 10);
-                if (bytes < 1024 * 1024) {
-                  formattedSize = `${(bytes / 1024).toFixed(0)} KB`;
-                } else {
-                  formattedSize = `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-                }
-              }
-
-              let formattedDate = 'neznámo';
-              if (f.modifiedTime) {
-                formattedDate = new Date(f.modifiedTime).toLocaleDateString('cs-CZ', {
-                  day: 'numeric',
-                  month: 'short',
-                });
-              }
-
-              return {
-                id: f.id,
-                name: f.name,
-                type: itemType,
-                size: formattedSize,
-                modified: formattedDate,
-                modifiedTimeRaw: f.modifiedTime,
-                starred: Boolean(f.starred),
-                mimeType: f.mimeType,
-                webViewLink: f.webViewLink,
-              };
-            }),
-          ];
-
-          setFiles(parsedFiles);
-        }
+        setFiles(merged);
       } catch (err) {
-        console.error('Error fetching files:', err);
+        console.error('Chyba při načítání souborů:', err);
       } finally {
         setIsLoadingFiles(false);
       }
@@ -320,18 +281,17 @@ export const Files: FC = () => {
 
   // Initialize root folder and files
   const loadRootAndFiles = useCallback(async () => {
-    if (effectiveOffline) {
-      // In offline mode, assume root folder and load cached items
-      const mockRootId = rootFolderId || 'offline_root';
-      setRootFolderId(mockRootId);
-      setBreadcrumbs([{ id: mockRootId, name: ROOT_FOLDER_NAME }]);
-      await fetchFilesInFolder(mockRootId);
-      return;
-    }
-
     if (!token) {
       setFiles([]);
       setBreadcrumbs([]);
+      return;
+    }
+
+    if (effectiveOffline) {
+      const mockRootId = localStorage.getItem('last_root_folder_id') || 'offline_root';
+      setRootFolderId(mockRootId);
+      setBreadcrumbs((prev) => (prev.length > 0 ? prev : [{ id: mockRootId, name: ROOT_FOLDER_NAME }]));
+      await fetchFilesInFolder(mockRootId);
       return;
     }
 
@@ -339,22 +299,7 @@ export const Files: FC = () => {
     setFolderNotFound(false);
 
     try {
-      const folderQuery = `name = '${ROOT_FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
-      const searchRes = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-          folderQuery
-        )}&fields=files(id,name)`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
-
-      if (!searchRes.ok) {
-        throw new Error('Chyba při vyhledávání složky na Google Disku');
-      }
-
-      const searchData = await searchRes.json();
-      const targetFolder = searchData.files && searchData.files[0];
+      const targetFolder = await searchFolderByName(token, ROOT_FOLDER_NAME);
 
       if (!targetFolder) {
         setRootFolderId(null);
@@ -364,22 +309,42 @@ export const Files: FC = () => {
         return;
       }
 
-      const folderId = targetFolder.id;
-      setRootFolderId(folderId);
-      setBreadcrumbs([{ id: folderId, name: ROOT_FOLDER_NAME }]);
-      await fetchFilesInFolder(folderId);
+      setRootFolderId(targetFolder.id);
+      localStorage.setItem('last_root_folder_id', targetFolder.id);
+      setBreadcrumbs([{ id: targetFolder.id, name: ROOT_FOLDER_NAME }]);
+      await fetchFilesInFolder(targetFolder.id);
     } catch (err) {
-      console.error('Error finding root folder:', err);
+      console.error('Chyba při hledání root složky:', err);
     } finally {
       setIsLoadingFiles(false);
     }
-  }, [token, effectiveOffline, rootFolderId, fetchFilesInFolder]);
+  }, [token, effectiveOffline, fetchFilesInFolder]);
 
   useEffect(() => {
     loadRootAndFiles();
   }, [loadRootAndFiles]);
 
-  // Navigate into clicked folder
+  const handleRefreshNeeded = useCallback(() => {
+    const activeFolderId = currentFolder?.id || rootFolderId;
+    if (activeFolderId) {
+      fetchFilesInFolder(activeFolderId);
+    }
+  }, [currentFolder?.id, rootFolderId, fetchFilesInFolder]);
+
+  // Hook for Electron file watcher and auto-upload
+  const {
+    watchFolderPath,
+    isWatchingLocalFolder,
+    localSyncNotice,
+    clearLocalSyncNotice,
+  } = useFileWatcher({
+    token,
+    effectiveOffline,
+    currentFolderId: currentFolder?.id || rootFolderId,
+    onRefreshNeeded: handleRefreshNeeded,
+  });
+
+  // Navigation handlers
   const handleOpenFolder = (folder: ExtendedDriveItem, e?: MouseEvent) => {
     if (e) e.stopPropagation();
     setBreadcrumbs((prev) => [...prev, { id: folder.id, name: folder.name }]);
@@ -388,17 +353,14 @@ export const Files: FC = () => {
     fetchFilesInFolder(folder.id);
   };
 
-  // Navigate to an ancestor breadcrumb level
   const handleNavigateBreadcrumb = (index: number) => {
     if (index === breadcrumbs.length - 1) return;
     const targetCrumb = breadcrumbs[index];
-    const updatedBreadcrumbs = breadcrumbs.slice(0, index + 1);
-    setBreadcrumbs(updatedBreadcrumbs);
+    const updated = breadcrumbs.slice(0, index + 1);
+    setBreadcrumbs(updated);
     setSelectedIds(new Set());
     setSearchQuery('');
-    if (targetCrumb.id) {
-      fetchFilesInFolder(targetCrumb.id);
-    }
+    if (targetCrumb.id) fetchFilesInFolder(targetCrumb.id);
   };
 
   const handleNavigateUp = () => {
@@ -406,26 +368,12 @@ export const Files: FC = () => {
     handleNavigateBreadcrumb(breadcrumbs.length - 2);
   };
 
-  // Create root folder if missing
   const handleCreateRootFolder = async () => {
     if (!token || effectiveOffline) return;
     setIsCreatingRootFolder(true);
     try {
-      const res = await fetch('https://www.googleapis.com/drive/v3/files', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: ROOT_FOLDER_NAME,
-          mimeType: 'application/vnd.google-apps.folder',
-        }),
-      });
-
-      if (res.ok) {
-        await loadRootAndFiles();
-      }
+      await createDriveFolder(token, ROOT_FOLDER_NAME);
+      await loadRootAndFiles();
     } catch (err) {
       console.error('Chyba při vytváření kořenové složky:', err);
     } finally {
@@ -433,53 +381,38 @@ export const Files: FC = () => {
     }
   };
 
-  // ==========================================
-  // BOD 3: KEŠOVÁNÍ SOUBORŮ & SLOŽEK, KONTROLA
-  // ==========================================
-
-  // Toggle caching for a file
+  // Caching handlers
   const handleToggleCacheFile = async (file: ExtendedDriveItem, e?: MouseEvent) => {
     if (e) e.stopPropagation();
     if (file.type === 'folder') return;
 
-    const isCached = cachedFileIds.has(file.id);
-
-    if (isCached) {
-      // Remove from cache
+    if (cachedFileIds.has(file.id)) {
       await removeFileFromCache(file.id);
       await refreshCacheStatus();
+      if (window.electronAPI) {
+        try {
+          await window.electronAPI.deleteFileFromSyncFolder(file.name);
+        } catch (err) {
+          console.warn('Could not delete from sync folder:', err);
+        }
+      }
+      if (effectiveOffline) {
+        setFiles((prev) => prev.filter((f) => f.id !== file.id));
+      }
       return;
     }
 
     if (!token) {
-      alert('Pro stažení do keše se musíte nejprve přihlásit.');
+      alert('Pro uložení do keše se musíte nejprve přihlásit.');
       return;
     }
-
     if (effectiveOffline) {
-      alert('Pro první stažení souboru do offline keše musíte mít připojení k serveru.');
+      alert('Pro první stažení do keše musíte být online.');
       return;
     }
 
     try {
-      let downloadUrl = `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
-      if (file.mimeType?.startsWith('application/vnd.google-apps.')) {
-        if (file.mimeType.includes('spreadsheet')) {
-          downloadUrl = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`;
-        } else {
-          downloadUrl = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=application/pdf`;
-        }
-      }
-
-      const res = await fetch(downloadUrl, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      if (!res.ok) {
-        throw new Error('Chyba při stahování souboru pro keš');
-      }
-
-      const blob = await res.blob();
+      const blob = await downloadDriveBlob(token, file.id, file.mimeType);
       const folderId = currentFolder?.id || rootFolderId || 'root';
 
       await saveFileToCache({
@@ -493,6 +426,15 @@ export const Files: FC = () => {
         blob,
       });
 
+      if (window.electronAPI) {
+        try {
+          const buffer = await blob.arrayBuffer();
+          await window.electronAPI.saveFileToSyncFolder(file.name, buffer);
+        } catch (err) {
+          console.warn('Could not save to sync folder:', err);
+        }
+      }
+
       await refreshCacheStatus();
     } catch (err) {
       console.error('Chyba při kešování souboru:', err);
@@ -500,19 +442,17 @@ export const Files: FC = () => {
     }
   };
 
-  // Toggle caching for an entire folder
   const handleToggleCacheFolder = async (folder: ExtendedDriveItem, e?: MouseEvent) => {
     if (e) e.stopPropagation();
-    const isCached = cachedFolderIds.has(folder.id);
 
-    if (isCached) {
+    if (cachedFolderIds.has(folder.id)) {
       await removeFolderFromCache(folder.id);
       await refreshCacheStatus();
       return;
     }
 
-    if (effectiveOffline) {
-      alert('Pro kešování složky musíte být online.');
+    if (effectiveOffline || !token) {
+      alert('Pro kešování složky musíte být online a přihlášeni.');
       return;
     }
 
@@ -523,43 +463,23 @@ export const Files: FC = () => {
         cachedAt: Date.now(),
       });
 
-      // Also cache all files inside this folder
-      const filesQuery = `'${folder.id}' in parents and trashed = false`;
-      const filesRes = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-          filesQuery
-        )}&fields=files(id,name,mimeType,size,modifiedTime)&pageSize=50`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-
-      if (filesRes.ok) {
-        const data = await filesRes.json();
-        for (const f of data.files || []) {
-          if (f.mimeType !== 'application/vnd.google-apps.folder') {
-            try {
-              let dlUrl = `https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`;
-              if (f.mimeType?.startsWith('application/vnd.google-apps.')) {
-                dlUrl = `https://www.googleapis.com/drive/v3/files/${f.id}/export?mimeType=application/pdf`;
-              }
-              const dlRes = await fetch(dlUrl, {
-                headers: { Authorization: `Bearer ${token}` },
-              });
-              if (dlRes.ok) {
-                const blob = await dlRes.blob();
-                await saveFileToCache({
-                  id: f.id,
-                  name: f.name,
-                  folderId: folder.id,
-                  mimeType: f.mimeType,
-                  size: blob.size,
-                  modifiedTime: f.modifiedTime,
-                  cachedAt: Date.now(),
-                  blob,
-                });
-              }
-            } catch {
-              // continue next file
-            }
+      const folderItems = await fetchFolderContents(token, folder.id);
+      for (const item of folderItems) {
+        if (item.type !== 'folder') {
+          try {
+            const blob = await downloadDriveBlob(token, item.id, item.mimeType);
+            await saveFileToCache({
+              id: item.id,
+              name: item.name,
+              folderId: folder.id,
+              mimeType: item.mimeType || 'application/octet-stream',
+              size: blob.size,
+              modifiedTime: item.modifiedTimeRaw || new Date().toISOString(),
+              cachedAt: Date.now(),
+              blob,
+            });
+          } catch {
+            // continue
           }
         }
       }
@@ -570,13 +490,11 @@ export const Files: FC = () => {
     }
   };
 
-  // Kontrola aktuálnosti a aktualizace keše v době připojení na server
   const handleCheckCacheFreshness = async () => {
-    if (effectiveOffline) {
-      alert('Pro kontrolu aktuálnosti keše musíte být připojeni k serveru.');
+    if (effectiveOffline || !token) {
+      alert('Pro kontrolu aktuálnosti keše musíte být online.');
       return;
     }
-    if (!token) return;
 
     setIsCheckingFreshness(true);
     try {
@@ -592,20 +510,20 @@ export const Files: FC = () => {
 
       for (const cached of allCached) {
         try {
-          const checkRes = await fetch(
+          const res = await fetch(
             `https://www.googleapis.com/drive/v3/files/${cached.id}?fields=id,name,modifiedTime,trashed`,
             { headers: { Authorization: `Bearer ${token}` } }
           );
 
-          if (!checkRes.ok) {
-            if (checkRes.status === 404) {
+          if (!res.ok) {
+            if (res.status === 404) {
               await removeFileFromCache(cached.id);
               removedCount++;
             }
             continue;
           }
 
-          const serverData = await checkRes.json();
+          const serverData = await res.json();
           if (serverData.trashed) {
             await removeFileFromCache(cached.id);
             removedCount++;
@@ -616,27 +534,15 @@ export const Files: FC = () => {
           const cachedTime = new Date(cached.modifiedTime).getTime();
 
           if (serverTime > cachedTime) {
-            // Server version is newer - download update into cache!
-            let dlUrl = `https://www.googleapis.com/drive/v3/files/${cached.id}?alt=media`;
-            if (cached.mimeType.startsWith('application/vnd.google-apps.')) {
-              dlUrl = `https://www.googleapis.com/drive/v3/files/${cached.id}/export?mimeType=application/pdf`;
-            }
-
-            const dlRes = await fetch(dlUrl, {
-              headers: { Authorization: `Bearer ${token}` },
+            const newBlob = await downloadDriveBlob(token, cached.id, cached.mimeType);
+            await saveFileToCache({
+              ...cached,
+              modifiedTime: serverData.modifiedTime,
+              cachedAt: Date.now(),
+              blob: newBlob,
+              size: newBlob.size,
             });
-
-            if (dlRes.ok) {
-              const newBlob = await dlRes.blob();
-              await saveFileToCache({
-                ...cached,
-                modifiedTime: serverData.modifiedTime,
-                cachedAt: Date.now(),
-                blob: newBlob,
-                size: newBlob.size,
-              });
-              updatedCount++;
-            }
+            updatedCount++;
           } else {
             upToDateCount++;
           }
@@ -647,62 +553,24 @@ export const Files: FC = () => {
 
       await refreshCacheStatus();
       alert(
-        `Kontrola keše dokončena:\n• ${updatedCount} souborů aktualizováno z novější verze na serveru\n• ${upToDateCount} souborů je aktuálních${
-          removedCount > 0 ? `\n• ${removedCount} smazaných souborů odebráno` : ''
+        `Kontrola keše dokončena:\n• ${updatedCount} souborů aktualizováno\n• ${upToDateCount} aktuálních${
+          removedCount > 0 ? `\n• ${removedCount} smazaných odebráno z keše` : ''
         }`
       );
     } catch (err) {
       console.error('Chyba při kontrole keše:', err);
-      alert('Při kontrole aktuálnosti keše došlo k chybě.');
+      alert('Při kontrole keše došlo k chybě.');
     } finally {
       setIsCheckingFreshness(false);
     }
   };
 
-  // ==========================================
-  // BOD 4: OFFLINE UPLOAD, SYNC & KONFLIKTY
-  // ==========================================
-
-  // Upload item to Google Drive via multipart
-  const uploadFileToServer = async (name: string, folderId: string, mimeType: string, blob: Blob) => {
-    const metadata = {
-      name,
-      parents: [folderId],
-    };
-    const boundary = `-------upload_${Date.now()}_${Math.random().toString(36).substring(2)}`;
-    const delimiter = `\r\n--${boundary}\r\n`;
-    const closeDelimiter = `\r\n--${boundary}--`;
-
-    const metadataBlob = new Blob(
-      [
-        delimiter +
-          'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
-          JSON.stringify(metadata) +
-          delimiter +
-          `Content-Type: ${mimeType || 'application/octet-stream'}\r\n\r\n`,
-      ],
-      { type: 'text/plain' }
-    );
-    const closingBlob = new Blob([closeDelimiter], { type: 'text/plain' });
-    const multipartBody = new Blob([metadataBlob, blob, closingBlob]);
-
-    return fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': `multipart/related; boundary=${boundary}`,
-      },
-      body: multipartBody,
-    });
-  };
-
-  // Synchronize offline upload queue to server with conflict detection
+  // Offline Upload Queue Synchronization
   const handleSyncOfflineQueue = async () => {
-    if (effectiveOffline) {
+    if (effectiveOffline || !token) {
       alert('Pro synchronizaci odchozí fronty musíte být online.');
       return;
     }
-    if (!token) return;
 
     const queue = await getOfflineUploads();
     if (queue.length === 0) {
@@ -714,69 +582,46 @@ export const Files: FC = () => {
 
     for (const item of queue) {
       try {
-        // Check if file with same name already exists in target folder on server
-        const escapedName = item.name.replace(/'/g, "\\'");
-        const checkRes = await fetch(
-          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-            `'${item.folderId}' in parents and name = '${escapedName}' and trashed = false`
-          )}&fields=files(id,name,modifiedTime,size)&pageSize=1`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
+        const existing = await findConflictingFile(token, item.folderId, item.name);
 
-        if (checkRes.ok) {
-          const checkData = await checkRes.json();
-          const existingServerFile = checkData.files?.[0];
-
-          if (existingServerFile) {
-            // CONFLICT DETECTED: Pause and open conflict modal for user choice
-            setConflictModalItem({
-              queueItem: item,
-              serverFile: existingServerFile,
-            });
-            setIsSyncingQueue(false);
-            return;
-          }
+        if (existing) {
+          setConflictModalItem({ queueItem: item, serverFile: existing });
+          setIsSyncingQueue(false);
+          return;
         }
 
-        // No conflict: upload directly
-        const uploadRes = await uploadFileToServer(
+        const res = await uploadMultipartFile(
+          token,
           item.name,
           item.folderId,
           item.mimeType,
           item.blob
         );
 
-        if (uploadRes.ok) {
-          const uploadedData = await uploadRes.json();
-          await removeOfflineUpload(item.queueId);
-          await removeFileFromCache(item.queueId);
+        await removeOfflineUpload(item.queueId);
+        await removeFileFromCache(item.queueId);
 
-          // Save final uploaded file in cache
-          await saveFileToCache({
-            id: uploadedData.id,
-            name: item.name,
-            folderId: item.folderId,
-            mimeType: item.mimeType,
-            size: item.size,
-            modifiedTime: new Date().toISOString(),
-            cachedAt: Date.now(),
-            blob: item.blob,
-          });
-        }
+        await saveFileToCache({
+          id: res.id,
+          name: item.name,
+          folderId: item.folderId,
+          mimeType: item.mimeType,
+          size: item.size,
+          modifiedTime: new Date().toISOString(),
+          cachedAt: Date.now(),
+          blob: item.blob,
+        });
       } catch (err) {
-        console.error(`Chyba při synchronizaci položky ${item.name}:`, err);
+        console.error(`Chyba při odesílání ${item.name}:`, err);
       }
     }
 
     setIsSyncingQueue(false);
     await refreshCacheStatus();
-    if (currentFolder?.id) {
-      await fetchFilesInFolder(currentFolder.id);
-    }
+    if (currentFolder?.id) await fetchFilesInFolder(currentFolder.id);
   };
 
-  // Resolve conflict: choice between client file or server file
-  const handleResolveConflict = async (choice: 'client' | 'server') => {
+  const handleResolveOfflineConflict = async (choice: 'client' | 'server') => {
     if (!conflictModalItem || !token) return;
 
     const { queueItem, serverFile } = conflictModalItem;
@@ -785,50 +630,34 @@ export const Files: FC = () => {
 
     try {
       if (choice === 'client') {
-        // "Použít soubor z klienta" -> Přepsat soubor na serveru obsahem z klienta
-        const updateRes = await fetch(
-          `https://www.googleapis.com/upload/drive/v3/files/${serverFile.id}?uploadType=media`,
-          {
-            method: 'PATCH',
-            headers: {
-              Authorization: `Bearer ${token}`,
-              'Content-Type': queueItem.mimeType || 'application/octet-stream',
-            },
-            body: queueItem.blob,
-          }
+        await updateDriveFileContent(
+          token,
+          serverFile.id,
+          queueItem.mimeType,
+          queueItem.blob
         );
-
-        if (updateRes.ok) {
-          await saveFileToCache({
-            id: serverFile.id,
-            name: serverFile.name,
-            folderId: queueItem.folderId,
-            mimeType: queueItem.mimeType,
-            size: queueItem.size,
-            modifiedTime: new Date().toISOString(),
-            cachedAt: Date.now(),
-            blob: queueItem.blob,
-          });
-        }
+        await saveFileToCache({
+          id: serverFile.id,
+          name: serverFile.name,
+          folderId: queueItem.folderId,
+          mimeType: queueItem.mimeType,
+          size: queueItem.size,
+          modifiedTime: new Date().toISOString(),
+          cachedAt: Date.now(),
+          blob: queueItem.blob,
+        });
       } else {
-        // "Použít soubor ze serveru" -> Zahodit lokální soubor z klienta, stáhnout server verzi do keše
-        const dlRes = await fetch(
-          `https://www.googleapis.com/drive/v3/files/${serverFile.id}?alt=media`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        if (dlRes.ok) {
-          const serverBlob = await dlRes.blob();
-          await saveFileToCache({
-            id: serverFile.id,
-            name: serverFile.name,
-            folderId: queueItem.folderId,
-            mimeType: queueItem.mimeType,
-            size: serverBlob.size,
-            modifiedTime: serverFile.modifiedTime,
-            cachedAt: Date.now(),
-            blob: serverBlob,
-          });
-        }
+        const serverBlob = await downloadDriveBlob(token, serverFile.id);
+        await saveFileToCache({
+          id: serverFile.id,
+          name: serverFile.name,
+          folderId: queueItem.folderId,
+          mimeType: queueItem.mimeType,
+          size: serverBlob.size,
+          modifiedTime: serverFile.modifiedTime,
+          cachedAt: Date.now(),
+          blob: serverBlob,
+        });
       }
 
       await removeOfflineUpload(queueItem.queueId);
@@ -839,18 +668,13 @@ export const Files: FC = () => {
     } finally {
       setIsSyncingQueue(false);
       await refreshCacheStatus();
-      if (currentFolder?.id) {
-        await fetchFilesInFolder(currentFolder.id);
-      }
-      // Continue sync for remaining queue
+      if (currentFolder?.id) await fetchFilesInFolder(currentFolder.id);
       handleSyncOfflineQueue();
     }
   };
 
-  // Upload local files from computer (online or offline into cache)
-  const handleUploadClick = () => {
-    fileInputRef.current?.click();
-  };
+  // Upload handlers
+  const handleUploadClick = () => fileInputRef.current?.click();
 
   const handleFileInputChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const fileList = e.target.files;
@@ -871,13 +695,12 @@ export const Files: FC = () => {
       return;
     }
 
-    // IF OFFLINE: Save to offline queue + local cache
     if (effectiveOffline) {
       for (let i = 0; i < filesToUpload.length; i++) {
         const file = filesToUpload[i];
         const queueId = `offline_${Date.now()}_${i}`;
 
-        const queueItem: OfflineUploadItem = {
+        await addOfflineUpload({
           queueId,
           name: file.name,
           folderId: targetFolderId,
@@ -885,11 +708,8 @@ export const Files: FC = () => {
           size: file.size,
           blob: file,
           createdAt: Date.now(),
-        };
+        });
 
-        await addOfflineUpload(queueItem);
-
-        // Also save to cached_files so it is visible and downloadable immediately
         await saveFileToCache({
           id: queueId,
           name: file.name,
@@ -900,36 +720,54 @@ export const Files: FC = () => {
           cachedAt: Date.now(),
           blob: file,
         });
+
+        if (window.electronAPI) {
+          try {
+            const buffer = await file.arrayBuffer();
+            await window.electronAPI.saveFileToSyncFolder(file.name, buffer);
+          } catch (err) {
+            console.warn('Could not save offline file to sync folder:', err);
+          }
+        }
       }
 
       if (fileInputRef.current) fileInputRef.current.value = '';
       await refreshCacheStatus();
       await fetchFilesInFolder(targetFolderId);
-      alert('Soubor(y) byly uloženy do offline keše. Jakmile budete online, můžete je nahrát na server.');
+      alert('Soubory uloženy do offline keše. Po obnovení sítě se automaticky nahrají.');
       return;
     }
 
-    // IF ONLINE: Standard multipart upload to Google Drive
+    if (!token) return;
+
     setIsUploading(true);
     try {
       for (let i = 0; i < filesToUpload.length; i++) {
         const file = filesToUpload[i];
-        setUploadProgressText(
-          `Nahrávám ${i + 1}/${filesToUpload.length}: ${file.name}...`
-        );
+        setUploadProgressText(`Nahrávám ${i + 1}/${filesToUpload.length}: ${file.name}...`);
+        const uploaded = await uploadMultipartFile(token, file.name, targetFolderId, file.type, file);
 
-        const res = await uploadFileToServer(
-          file.name,
-          targetFolderId,
-          file.type,
-          file
-        );
+        await saveFileToCache({
+          id: uploaded.id,
+          name: file.name,
+          folderId: targetFolderId,
+          mimeType: file.type || 'application/octet-stream',
+          size: file.size,
+          modifiedTime: new Date().toISOString(),
+          cachedAt: Date.now(),
+          blob: file,
+        });
 
-        if (!res.ok) {
-          console.error(`Upload failed for ${file.name}:`, await res.text());
+        if (window.electronAPI) {
+          try {
+            const buffer = await file.arrayBuffer();
+            await window.electronAPI.saveFileToSyncFolder(file.name, buffer);
+          } catch (err) {
+            console.warn('Could not save uploaded file to sync folder:', err);
+          }
         }
       }
-
+      await refreshCacheStatus();
       await fetchFilesInFolder(targetFolderId);
     } catch (err) {
       console.error('Chyba při nahrávání:', err);
@@ -941,24 +779,17 @@ export const Files: FC = () => {
     }
   };
 
-  // Create new folder (only folder name)
+  // Folder modal creation handler
   const handleCreateFolder = async (e: FormEvent) => {
     e.preventDefault();
     if (!newFolderName.trim()) return;
 
     const targetFolderId = currentFolder?.id || rootFolderId;
-
-    if (!token && !effectiveOffline) {
-      alert('Pro vytvoření složky musíte být přihlášeni.');
-      return;
-    }
-
     if (!targetFolderId) return;
 
     setIsSavingFolder(true);
     try {
       if (effectiveOffline) {
-        // Offline folder mock
         const newFolderId = `offline_folder_${Date.now()}`;
         await saveFolderToCache({
           id: newFolderId,
@@ -972,22 +803,8 @@ export const Files: FC = () => {
         return;
       }
 
-      const body = {
-        name: newFolderName.trim(),
-        mimeType: 'application/vnd.google-apps.folder',
-        parents: [targetFolderId],
-      };
-
-      const res = await fetch('https://www.googleapis.com/drive/v3/files', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
-
-      if (res.ok) {
+      if (token) {
+        await createDriveFolder(token, newFolderName.trim(), targetFolderId);
         setNewFolderName('');
         setShowFolderModal(false);
         await fetchFilesInFolder(targetFolderId);
@@ -999,84 +816,63 @@ export const Files: FC = () => {
     }
   };
 
-  // Helper to trigger browser download
-  const triggerBrowserDownload = (blob: Blob, filename: string) => {
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    window.URL.revokeObjectURL(url);
-    document.body.removeChild(link);
-  };
-
-  // Download single file (supports offline cache retrieval)
+  // Download file helper (with Electron watched folder auto-save)
   const downloadSingleFile = async (file: ExtendedDriveItem, e?: MouseEvent) => {
     if (e) e.stopPropagation();
     if (file.type === 'folder') return;
 
-    // Check if available in local offline cache
+    const triggerBlob = async (blob: Blob, filename: string) => {
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(link);
+
+      if (window.electronAPI) {
+        try {
+          const buffer = await blob.arrayBuffer();
+          await window.electronAPI.saveFileToSyncFolder(filename, buffer);
+        } catch (err) {
+          console.warn('Could not save to sync folder:', err);
+        }
+      }
+    };
+
     const cached = await getFileFromCache(file.id);
     if (cached) {
-      triggerBrowserDownload(cached.blob, cached.name);
+      await triggerBlob(cached.blob, cached.name);
       return;
     }
 
     if (effectiveOffline) {
-      alert(`Soubor "${file.name}" není v lokální offline keši. Pro jeho stažení se připojte k internetu nebo jej nejprve kešujte.`);
+      alert(`Soubor "${file.name}" není v lokální keši.`);
       return;
     }
 
     if (!token) {
-      alert('Pro stahování souborů se prosím nejprve přihlaste.');
+      alert('Pro stahování souborů se nejprve přihlaste.');
       return;
     }
 
-    let downloadUrl = `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
-    let filename = file.name;
-
-    if (file.mimeType?.startsWith('application/vnd.google-apps.')) {
-      if (file.mimeType.includes('spreadsheet')) {
-        downloadUrl = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`;
-        if (!filename.endsWith('.xlsx')) filename += '.xlsx';
+    try {
+      const blob = await downloadDriveBlob(token, file.id, file.mimeType);
+      await triggerBlob(blob, file.name);
+    } catch (err: any) {
+      if (err.message === 'AUTH_FORBIDDEN') {
+        alert(`K souboru "${file.name}" nemá aplikace oprávnění ke čtení. Odhlaste se a znovu přihlaste s plným oprávněním.`);
       } else {
-        downloadUrl = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=application/pdf`;
-        if (!filename.endsWith('.pdf')) filename += '.pdf';
+        alert(`Nepodařilo se stáhnout soubor "${file.name}".`);
       }
     }
-
-    const res = await fetch(downloadUrl, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (!res.ok) {
-      let errorMsg = `Nepodařilo se stáhnout soubor "${file.name}".`;
-      try {
-        const errJson = await res.json();
-        if (
-          errJson?.error?.code === 403 ||
-          errJson?.error?.errors?.[0]?.reason === 'appNotAuthorizedToFile'
-        ) {
-          errorMsg = `K souboru "${file.name}" nemá aplikace oprávnění ke čtení obsahu. Odhlaste se a znovu přihlaste s plným oprávněním k Disku.`;
-        }
-      } catch {
-        // fallback
-      }
-      alert(errorMsg);
-      return;
-    }
-
-    const blob = await res.blob();
-    triggerBrowserDownload(blob, filename);
   };
 
-  // Download all selected files
   const handleDownloadSelected = async () => {
     const selectedFiles = files.filter(
       (f) => selectedIds.has(f.id) && f.type !== 'folder'
     );
-
     if (selectedFiles.length === 0) {
       alert('Označte prosím alespoň jeden soubor ke stažení.');
       return;
@@ -1092,13 +888,260 @@ export const Files: FC = () => {
       }
     } catch (err) {
       console.error('Chyba při hromadném stahování:', err);
-      alert('Při stahování souborů došlo k chybě.');
     } finally {
       setIsDownloading(false);
     }
   };
 
-  // Selection toggle handlers
+  // Rename handlers
+  const handleStartRename = (file: ExtendedDriveItem, e?: MouseEvent) => {
+    if (e) e.stopPropagation();
+    setRenameTarget(file);
+    setRenameInputValue(file.name);
+  };
+
+  const handleRenameSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!renameTarget || !renameInputValue.trim() || !token) return;
+
+    const newName = renameInputValue.trim();
+    if (newName === renameTarget.name) {
+      setRenameTarget(null);
+      return;
+    }
+
+    const existing = files.find(
+      (f) => f.name.toLowerCase() === newName.toLowerCase() && f.id !== renameTarget.id
+    );
+
+    if (existing) {
+      setOpConflict({
+        type: 'rename',
+        item: renameTarget,
+        existingItemName: existing.name,
+        onResolve: async (choice) => {
+          setOpConflict(null);
+          if (choice === 'cancel') return;
+
+          setIsRenaming(true);
+          try {
+            if (choice === 'overwrite') {
+              await trashDriveItem(token, existing.id);
+              if (window.electronAPI) {
+                await window.electronAPI.deleteFileFromSyncFolder(existing.name);
+              }
+            }
+            await renameDriveItem(token, renameTarget.id, newName);
+            if (window.electronAPI) {
+              await window.electronAPI.renameFileInSyncFolder(renameTarget.name, newName);
+            }
+            const cached = await getFileFromCache(renameTarget.id);
+            if (cached) {
+              await saveFileToCache({ ...cached, name: newName });
+            }
+            setRenameTarget(null);
+            if (currentFolder?.id) await fetchFilesInFolder(currentFolder.id);
+          } catch (err) {
+            console.error('Chyba při přejmenování:', err);
+          } finally {
+            setIsRenaming(false);
+          }
+        },
+      });
+      return;
+    }
+
+    setIsRenaming(true);
+    try {
+      await renameDriveItem(token, renameTarget.id, newName);
+      if (window.electronAPI) {
+        await window.electronAPI.renameFileInSyncFolder(renameTarget.name, newName);
+      }
+      const cached = await getFileFromCache(renameTarget.id);
+      if (cached) {
+        await saveFileToCache({ ...cached, name: newName });
+      }
+      setRenameTarget(null);
+      if (currentFolder?.id) await fetchFilesInFolder(currentFolder.id);
+    } catch (err) {
+      console.error('Chyba při přejmenování:', err);
+    } finally {
+      setIsRenaming(false);
+    }
+  };
+
+  // Clipboard operations (Copy, Cut, Paste)
+  const handleCopy = (items: ExtendedDriveItem[], e?: MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (items.length === 0) return;
+    setClipboard({
+      action: 'copy',
+      items,
+      sourceFolderId: currentFolder?.id || rootFolderId || '',
+    });
+  };
+
+  const handleCut = (items: ExtendedDriveItem[], e?: MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (items.length === 0) return;
+    setClipboard({
+      action: 'cut',
+      items,
+      sourceFolderId: currentFolder?.id || rootFolderId || '',
+    });
+  };
+
+  const handlePaste = async () => {
+    if (!clipboard || !token || effectiveOffline) {
+      alert('Pro vložení položek musíte mít položky ve schránce a být online.');
+      return;
+    }
+
+    const targetFolderId = currentFolder?.id || rootFolderId;
+    if (!targetFolderId) return;
+
+    setIsProcessingPaste(true);
+    try {
+      for (const item of clipboard.items) {
+        const existing = files.find(
+          (f) => f.name.toLowerCase() === item.name.toLowerCase()
+        );
+
+        if (existing) {
+          await new Promise<void>((resolve) => {
+            setOpConflict({
+              type: 'paste',
+              item,
+              existingItemName: existing.name,
+              onResolve: async (choice) => {
+                setOpConflict(null);
+                if (choice === 'cancel') {
+                  resolve();
+                  return;
+                }
+
+                let finalName = item.name;
+                if (choice === 'keep_both') {
+                  finalName = `Kopie - ${item.name}`;
+                } else if (choice === 'overwrite') {
+                  await trashDriveItem(token, existing.id);
+                }
+
+                if (clipboard.action === 'copy') {
+                  if (item.type === 'folder') {
+                    await createDriveFolder(token, finalName, targetFolderId);
+                  } else {
+                    await copyDriveFile(token, item.id, finalName, targetFolderId);
+                  }
+                } else {
+                  await moveDriveItem(
+                    token,
+                    item.id,
+                    targetFolderId,
+                    clipboard.sourceFolderId,
+                    finalName
+                  );
+                }
+                resolve();
+              },
+            });
+          });
+        } else {
+          if (clipboard.action === 'copy') {
+            if (item.type === 'folder') {
+              await createDriveFolder(token, item.name, targetFolderId);
+            } else {
+              await copyDriveFile(token, item.id, item.name, targetFolderId);
+            }
+          } else {
+            await moveDriveItem(
+              token,
+              item.id,
+              targetFolderId,
+              clipboard.sourceFolderId
+            );
+          }
+        }
+      }
+
+      if (clipboard.action === 'cut') setClipboard(null);
+      await fetchFilesInFolder(targetFolderId);
+    } catch (err) {
+      console.error('Chyba při vkládání položek:', err);
+      alert('Při vkládání položek došlo k chybě.');
+    } finally {
+      setIsProcessingPaste(false);
+    }
+  };
+
+  // Delete operations
+  const handleDeleteItem = async (id: string, e?: MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!confirm('Opravdu chcete tuto položku smazat?')) return;
+
+    const targetFile = files.find((f) => f.id === id);
+    setFiles((prev) => prev.filter((f) => f.id !== id));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+
+    await removeFileFromCache(id);
+    await removeOfflineUpload(id);
+    await refreshCacheStatus();
+
+    if (targetFile && window.electronAPI) {
+      try {
+        await window.electronAPI.deleteFileFromSyncFolder(targetFile.name);
+      } catch (err) {
+        console.warn('Could not delete from sync folder:', err);
+      }
+    }
+
+    if (token && !effectiveOffline) {
+      try {
+        await trashDriveItem(token, id);
+      } catch (err) {
+        console.warn('Could not trash item on Drive:', err);
+      }
+    }
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Opravdu chcete smazat ${selectedIds.size} vybraných položek?`)) return;
+
+    const ids = Array.from(selectedIds);
+    const targets = files.filter((f) => selectedIds.has(f.id));
+    setFiles((prev) => prev.filter((f) => !selectedIds.has(f.id)));
+    setSelectedIds(new Set());
+
+    for (const id of ids) {
+      await removeFileFromCache(id);
+      await removeOfflineUpload(id);
+      if (token && !effectiveOffline) {
+        try {
+          await trashDriveItem(token, id);
+        } catch {
+          // continue
+        }
+      }
+    }
+
+    if (window.electronAPI) {
+      for (const t of targets) {
+        try {
+          await window.electronAPI.deleteFileFromSyncFolder(t.name);
+        } catch (err) {
+          console.warn('Could not delete from sync folder:', err);
+        }
+      }
+    }
+
+    await refreshCacheStatus();
+  };
+
   const handleToggleSelect = (id: string, e?: MouseEvent) => {
     if (e) e.stopPropagation();
     setSelectedIds((prev) => {
@@ -1117,90 +1160,27 @@ export const Files: FC = () => {
     }
   };
 
-  const handleClearSelection = () => {
-    setSelectedIds(new Set());
-  };
-
-  // Toggle star
   const handleToggleStar = async (id: string, currentStarred: boolean, e: MouseEvent) => {
     e.stopPropagation();
     setFiles((prev) =>
       prev.map((f) => (f.id === id ? { ...f, starred: !currentStarred } : f))
     );
-
     if (token && !effectiveOffline) {
-      try {
-        await fetch(`https://www.googleapis.com/drive/v3/files/${id}`, {
-          method: 'PATCH',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ starred: !currentStarred }),
-        });
-      } catch (err) {
-        console.warn('Could not update star on Google Drive:', err);
-      }
-    }
-  };
-
-  // Delete item
-  const handleDeleteItem = async (id: string, e: MouseEvent) => {
-    e.stopPropagation();
-    setFiles((prev) => prev.filter((f) => f.id !== id));
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
-
-    await removeFileFromCache(id);
-    await removeOfflineUpload(id);
-    await refreshCacheStatus();
-
-    if (token && !effectiveOffline) {
-      try {
-        await fetch(`https://www.googleapis.com/drive/v3/files/${id}`, {
-          method: 'PATCH',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ trashed: true }),
-        });
-      } catch (err) {
-        console.warn('Could not delete file from Google Drive:', err);
-      }
-    }
-  };
-
-  const renderIcon = (type: DriveItem['type'], sizeClass = 'h-8 w-8') => {
-    switch (type) {
-      case 'folder':
-        return <Folder className={`${sizeClass} text-amber-500 fill-amber-500/20 shrink-0`} />;
-      case 'document':
-        return <FileText className={`${sizeClass} text-blue-500 shrink-0`} />;
-      case 'spreadsheet':
-        return <FileSpreadsheet className={`${sizeClass} text-emerald-600 shrink-0`} />;
-      case 'image':
-        return <ImageIcon className={`${sizeClass} text-purple-500 shrink-0`} />;
-      default:
-        return <File className={`${sizeClass} text-muted-foreground shrink-0`} />;
+      await toggleDriveStar(token, id, !currentStarred);
     }
   };
 
   const filteredFiles = files.filter((file) =>
     file.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
+  const selectedItemsList = files.filter((f) => selectedIds.has(f.id));
 
-  const isAllSelected =
-    filteredFiles.length > 0 && selectedIds.size === filteredFiles.length;
-  const isSomeSelected =
-    selectedIds.size > 0 && selectedIds.size < filteredFiles.length;
+  if (!token) {
+    return <Navigate to="/login" replace />;
+  }
 
   return (
     <div className="flex flex-col min-h-screen bg-background text-foreground transition-colors">
-      {/* Hidden file input */}
       <input
         type="file"
         ref={fileInputRef}
@@ -1209,29 +1189,21 @@ export const Files: FC = () => {
         className="hidden"
       />
 
-      {/* Horní navigační lišta */}
+      {/* Header */}
       <header className="h-16 border-b border-border bg-background/95 backdrop-blur sticky top-0 z-50 px-4 md:px-8 flex items-center justify-between gap-4">
-        {/* Brand & Root path */}
         <div className="flex items-center gap-3">
           <Link to="/" className="flex items-center gap-2.5 group">
-            <div className="h-8 w-8 rounded-lg bg-gradient-to-tr from-blue-600 via-green-500 to-amber-400 flex items-center justify-center text-white font-bold text-sm shadow-sm group-hover:scale-105 transition-transform">
-              ▲
-            </div>
             <span className="font-semibold text-base text-foreground tracking-tight hidden sm:inline">
               Disk Google
             </span>
           </Link>
-
           <span className="text-muted-foreground/40 hidden sm:inline">/</span>
-
-          {/* Root directory indicator */}
           <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-primary/10 border border-primary/20 text-primary text-xs font-semibold">
             <FolderTree className="h-3.5 w-3.5" />
             <span>/{ROOT_FOLDER_NAME}</span>
           </div>
         </div>
 
-        {/* Vyhledávací pole */}
         <div className="relative flex-1 max-w-sm hidden md:block">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
           <Input
@@ -1243,24 +1215,18 @@ export const Files: FC = () => {
           />
         </div>
 
-        {/* Akce vpravo */}
         <div className="flex items-center gap-2 sm:gap-3">
-          {/* Online / Offline status & toggle */}
           <button
             type="button"
-            onClick={() => setIsSimulatedOffline(!isSimulatedOffline)}
+            onClick={toggleOffline}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition-all ${
               effectiveOffline
                 ? 'bg-amber-500/10 border-amber-500/30 text-amber-500 hover:bg-amber-500/20'
                 : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 hover:bg-emerald-500/20'
             }`}
-            title="Klikněte pro přepnutí simulace offline režimu"
+            title="Klikněte pro přepnutí offline režimu"
           >
-            {effectiveOffline ? (
-              <WifiOff className="h-3.5 w-3.5" />
-            ) : (
-              <Wifi className="h-3.5 w-3.5" />
-            )}
+            {effectiveOffline ? <WifiOff className="h-3.5 w-3.5" /> : <Wifi className="h-3.5 w-3.5" />}
             <span className="hidden sm:inline">
               {effectiveOffline ? 'Offline režim' : 'Online'}
             </span>
@@ -1268,7 +1234,6 @@ export const Files: FC = () => {
 
           <ThemeToggle />
 
-          {/* Přepínač zobrazení Mřížka / Seznam */}
           <div className="flex items-center border border-border rounded-lg p-0.5 bg-muted">
             <button
               onClick={() => setViewMode('grid')}
@@ -1298,11 +1263,8 @@ export const Files: FC = () => {
             variant="ghost"
             size="icon"
             onClick={() => {
-              if (currentFolder?.id) {
-                fetchFilesInFolder(currentFolder.id);
-              } else {
-                loadRootAndFiles();
-              }
+              if (currentFolder?.id) fetchFilesInFolder(currentFolder.id);
+              else loadRootAndFiles();
             }}
             disabled={isLoadingFiles}
             className="h-8 w-8 text-muted-foreground hover:text-foreground"
@@ -1317,36 +1279,17 @@ export const Files: FC = () => {
             </Link>
           </Button>
 
-          {/* User profile / Log in */}
           {token ? (
             <div className="flex items-center gap-2">
               <div
                 className="flex items-center gap-2 p-1 pl-1.5 bg-muted rounded-full border border-border"
                 title={`${user?.name} (${user?.email})`}
               >
-                {user?.picture ? (
-                  <img
-                    src={user.picture}
-                    alt={user.name || 'User'}
-                    className="h-6 w-6 rounded-full object-cover"
-                  />
-                ) : (
-                  <div className="h-6 w-6 rounded-full bg-primary text-primary-foreground font-semibold flex items-center justify-center text-[10px]">
-                    {user?.name ? user.name.slice(0, 2).toUpperCase() : 'U'}
-                  </div>
-                )}
                 <span className="text-xs font-medium text-foreground max-w-[100px] truncate hidden lg:inline mr-1">
                   {user?.name || user?.email}
                 </span>
               </div>
-
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={logout}
-                className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                title="Odhlásit se"
-              >
+              <Button variant="ghost" size="icon" onClick={logout} className="h-8 w-8 text-muted-foreground hover:text-destructive" title="Odhlásit se">
                 <LogOut className="h-4 w-4" />
               </Button>
             </div>
@@ -1361,9 +1304,8 @@ export const Files: FC = () => {
         </div>
       </header>
 
-      {/* Hlavní obsahová plocha */}
-      <main className="flex-1 max-w-6xl w-full mx-auto p-4 md:p-8 space-y-5">
-        {/* Vyhledávací pole pro mobilní zařízení */}
+      {/* Main Content */}
+      <main className="flex-1 max-w-6xl w-full mx-auto p-4 md:p-8 space-y-4">
         <div className="relative block md:hidden">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
@@ -1375,7 +1317,33 @@ export const Files: FC = () => {
           />
         </div>
 
-        {/* Offline sync banner (if items are waiting to be uploaded) */}
+        {/* Local Sync Notification */}
+        {localSyncNotice && (
+          <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs flex items-center justify-between text-emerald-600 animate-in fade-in">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="h-4 w-4 shrink-0" />
+              <span>{localSyncNotice}</span>
+            </div>
+            <button onClick={clearLocalSyncNotice} className="p-1 hover:text-foreground">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Electron Watched Folder Status Banner */}
+        {isWatchingLocalFolder && (
+          <div className="px-4 py-2 bg-muted/60 border border-border rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2 truncate">
+              <FolderSync className="h-4 w-4 text-primary shrink-0" />
+              <span className="font-medium text-foreground shrink-0">Sledovaná složka pro auto-upload:</span>
+              <span className="font-mono text-[11px] truncate" title={watchFolderPath}>
+                {watchFolderPath}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Offline Upload Queue Banner */}
         {offlineQueue.length > 0 && (
           <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
             <div className="flex items-center gap-2.5">
@@ -1405,92 +1373,30 @@ export const Files: FC = () => {
           </div>
         )}
 
-        {/* Drobečková navigace a hlavní akce (Nahrát soubor / Nová složka / Kontrola keše) */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-card border border-border rounded-xl shadow-xs">
-          {/* Breadcrumbs */}
-          <div className="flex items-center gap-1.5 flex-wrap text-xs">
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={breadcrumbs.length <= 1}
-              onClick={handleNavigateUp}
-              className="h-8 px-2.5 text-muted-foreground hover:text-foreground disabled:opacity-30 gap-1 rounded-lg"
-              title="Přejít o úroveň výš"
-            >
-              <ArrowUp className="h-3.5 w-3.5" />
-              <span>Nahoru</span>
-            </Button>
+        {/* Clipboard Actions Bar */}
+        <FileClipboardBar
+          clipboard={clipboard}
+          isProcessingPaste={isProcessingPaste}
+          effectiveOffline={effectiveOffline}
+          onPaste={handlePaste}
+          onClear={() => setClipboard(null)}
+        />
 
-            <div className="h-4 w-px bg-border mx-1" />
+        {/* Breadcrumbs and Top Actions */}
+        <FileBreadcrumbs
+          breadcrumbs={breadcrumbs}
+          rootFolderName={ROOT_FOLDER_NAME}
+          isUploading={isUploading}
+          isCheckingFreshness={isCheckingFreshness}
+          effectiveOffline={effectiveOffline}
+          onNavigateBreadcrumb={handleNavigateBreadcrumb}
+          onNavigateUp={handleNavigateUp}
+          onCheckCache={handleCheckCacheFreshness}
+          onUploadClick={handleUploadClick}
+          onOpenFolderModal={() => setShowFolderModal(true)}
+        />
 
-            {breadcrumbs.length > 0 ? (
-              breadcrumbs.map((crumb, idx) => {
-                const isLast = idx === breadcrumbs.length - 1;
-                return (
-                  <div key={crumb.id || idx} className="flex items-center gap-1">
-                    {idx > 0 && <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
-                    <button
-                      onClick={() => handleNavigateBreadcrumb(idx)}
-                      className={`px-2 py-1 rounded-md transition-colors text-xs ${
-                        isLast
-                          ? 'font-bold text-foreground bg-muted pointer-events-none'
-                          : 'text-muted-foreground hover:text-foreground hover:bg-muted font-medium'
-                      }`}
-                    >
-                      {idx === 0 ? `/${crumb.name}` : crumb.name}
-                    </button>
-                  </div>
-                );
-              })
-            ) : (
-              <span className="font-semibold text-card-foreground">/{ROOT_FOLDER_NAME}</span>
-            )}
-          </div>
-
-          {/* Action buttons */}
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* Cache freshness check button */}
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={handleCheckCacheFreshness}
-              disabled={isCheckingFreshness || effectiveOffline}
-              className="border-input text-foreground text-xs gap-1.5 h-8 rounded-lg"
-              title="Zkontrolovat aktuálnost keše vůči serveru"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${isCheckingFreshness ? 'animate-spin' : ''}`} />
-              <span className="hidden md:inline">Zkontrolovat keš</span>
-            </Button>
-
-            {/* Upload file */}
-            <Button
-              size="sm"
-              onClick={handleUploadClick}
-              disabled={isUploading}
-              className="bg-primary hover:bg-primary/90 text-primary-foreground text-xs gap-1.5 h-8 rounded-lg shadow-xs"
-            >
-              {isUploading ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Upload className="h-3.5 w-3.5" />
-              )}
-              <span>{isUploading ? 'Nahrávám...' : 'Nahrát soubor'}</span>
-            </Button>
-
-            {/* New folder (only for folder name) */}
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setShowFolderModal(true)}
-              className="border-input text-foreground text-xs gap-1.5 h-8 rounded-lg"
-            >
-              <FolderPlus className="h-3.5 w-3.5" />
-              <span>Nová složka</span>
-            </Button>
-          </div>
-        </div>
-
-        {/* Upload progress message */}
+        {/* Upload Progress */}
         {isUploading && uploadProgressText && (
           <div className="p-3 bg-primary/10 border border-primary/20 rounded-xl text-xs flex items-center gap-2 text-primary animate-pulse">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -1498,41 +1404,21 @@ export const Files: FC = () => {
           </div>
         )}
 
-        {/* Výběrová lišta pro označené soubory */}
+        {/* Multi-Selection Actions Bar */}
         {selectedIds.size > 0 && (
-          <div className="flex items-center justify-between p-3 px-4 bg-primary/10 border border-primary/20 rounded-xl text-xs transition-all">
-            <div className="flex items-center gap-2">
-              <span className="font-semibold text-primary">
-                Vybráno: {selectedIds.size}{' '}
-                {selectedIds.size === 1
-                  ? 'položka'
-                  : selectedIds.size < 5
-                  ? 'položky'
-                  : 'položek'}
-              </span>
-              <button
-                onClick={handleClearSelection}
-                className="text-muted-foreground hover:text-foreground text-[11px] underline ml-2"
-              >
-                Zrušit výběr
-              </button>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                onClick={handleDownloadSelected}
-                disabled={isDownloading}
-                className="h-8 gap-1.5 bg-primary hover:bg-primary/90 text-primary-foreground text-xs"
-              >
-                <Download className={`h-3.5 w-3.5 ${isDownloading ? 'animate-bounce' : ''}`} />
-                <span>{isDownloading ? 'Stahuji...' : 'Stáhnout označené'}</span>
-              </Button>
-            </div>
-          </div>
+          <FileSelectionBar
+            selectedCount={selectedIds.size}
+            selectedItems={selectedItemsList}
+            isDownloading={isDownloading}
+            onClearSelection={() => setSelectedIds(new Set())}
+            onCopy={(items) => handleCopy(items)}
+            onCut={(items) => handleCut(items)}
+            onDownload={handleDownloadSelected}
+            onDelete={handleDeleteSelected}
+          />
         )}
 
-        {/* Upozornění, pokud kořenová složka na Disku zatím neexistuje */}
+        {/* Folder Not Found Notice */}
         {folderNotFound && !effectiveOffline && (
           <div className="p-6 bg-amber-500/10 border border-amber-500/20 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="flex items-start gap-3">
@@ -1543,7 +1429,6 @@ export const Files: FC = () => {
                 </h3>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   V kořenovém adresáři vašeho Google Disku nebyla nalezena složka s tímto názvem.
-                  Můžete ji jedním kliknutím vytvořit.
                 </p>
               </div>
             </div>
@@ -1559,7 +1444,7 @@ export const Files: FC = () => {
           </div>
         )}
 
-        {/* Seznam / Mřížka souborů */}
+        {/* File Grid/List or Empty/Login State */}
         {!token && !effectiveOffline ? (
           <div className="text-center py-20 px-4 bg-card border border-border rounded-2xl space-y-4">
             <div className="h-14 w-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center mx-auto">
@@ -1616,460 +1501,71 @@ export const Files: FC = () => {
             )}
           </div>
         ) : viewMode === 'grid' ? (
-          /* Grid View */
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            {filteredFiles.map((file) => {
-              const isSelected = selectedIds.has(file.id);
-              const isFolder = file.type === 'folder';
-              const isCached = isFolder
-                ? cachedFolderIds.has(file.id)
-                : cachedFileIds.has(file.id);
-
-              return (
-                <Card
-                  key={file.id}
-                  onClick={() => {
-                    if (isFolder) {
-                      handleOpenFolder(file);
-                    } else if (file.webViewLink && !effectiveOffline) {
-                      window.open(file.webViewLink, '_blank');
-                    } else {
-                      downloadSingleFile(file);
-                    }
-                  }}
-                  className={`hover:border-primary hover:shadow-md transition-all cursor-pointer bg-card text-card-foreground border-border group relative ${
-                    isSelected ? 'ring-2 ring-primary border-primary bg-primary/5' : ''
-                  }`}
-                >
-                  <CardContent className="p-4 flex flex-col gap-3">
-                    <div className="flex items-center justify-between">
-                      {/* Checkbox for selection */}
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={(e) => handleToggleSelect(file.id, e)}
-                          className={`p-1 rounded-md transition-colors ${
-                            isSelected
-                              ? 'text-primary'
-                              : 'text-muted-foreground/40 hover:text-muted-foreground'
-                          }`}
-                          title={isSelected ? 'Zrušit označení' : 'Označit položku'}
-                        >
-                          {isSelected ? (
-                            <CheckSquare className="h-4 w-4" />
-                          ) : (
-                            <Square className="h-4 w-4" />
-                          )}
-                        </button>
-                        {renderIcon(file.type)}
-                      </div>
-
-                      <div className="flex items-center gap-1">
-                        {/* Offline cache toggle button */}
-                        <button
-                          type="button"
-                          onClick={(e) =>
-                            isFolder
-                              ? handleToggleCacheFolder(file, e)
-                              : handleToggleCacheFile(file, e)
-                          }
-                          className={`p-1 rounded-md transition-colors ${
-                            isCached
-                              ? 'text-emerald-500 hover:text-emerald-600'
-                              : 'text-muted-foreground/40 hover:text-foreground hover:bg-muted'
-                          }`}
-                          title={
-                            isCached
-                              ? 'Uloženo v offline keši (kliknutím odeberete)'
-                              : 'Uložit do offline keše pro práci bez internetu'
-                          }
-                        >
-                          {isCached ? (
-                            <CheckCircle2 className="h-4 w-4" />
-                          ) : (
-                            <HardDriveDownload className="h-4 w-4" />
-                          )}
-                        </button>
-
-                        {!isFolder && (
-                          <button
-                            type="button"
-                            onClick={(e) => downloadSingleFile(file, e)}
-                            className="p-1 rounded-md text-muted-foreground/60 hover:text-primary hover:bg-muted transition-colors"
-                            title="Stáhnout do počítače"
-                          >
-                            <Download className="h-4 w-4" />
-                          </button>
-                        )}
-
-                        {file.webViewLink && !effectiveOffline && (
-                          <a
-                            href={file.webViewLink}
-                            target="_blank"
-                            rel="noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="p-1 rounded-md text-muted-foreground/60 hover:text-primary hover:bg-muted"
-                            title="Otevřít na Google Disku"
-                          >
-                            <ExternalLink className="h-4 w-4" />
-                          </a>
-                        )}
-
-                        <button
-                          type="button"
-                          onClick={(e) => handleToggleStar(file.id, Boolean(file.starred), e)}
-                          className={`p-1 rounded-md hover:bg-muted transition-colors ${
-                            file.starred
-                              ? 'text-amber-400 fill-amber-400'
-                              : 'text-muted-foreground/40 hover:text-muted-foreground'
-                          }`}
-                          title={file.starred ? 'Odebrat hvězdičku' : 'Přidat hvězdičku'}
-                        >
-                          <Star className={`h-4 w-4 ${file.starred ? 'fill-amber-400' : ''}`} />
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={(e) => handleDeleteItem(file.id, e)}
-                          className="p-1 rounded-md text-muted-foreground/40 hover:text-destructive hover:bg-muted transition-colors"
-                          title="Smazat"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <h3
-                          className="font-medium text-sm text-card-foreground truncate group-hover:text-primary transition-colors flex-1"
-                          title={file.name}
-                        >
-                          {file.name}
-                        </h3>
-                        {file.isOfflineQueue && (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-500 font-semibold shrink-0">
-                            Offline
-                          </span>
-                        )}
-                        {isCached && !file.isOfflineQueue && (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-600 font-semibold shrink-0">
-                            Kešováno
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="flex items-center justify-between text-xs text-muted-foreground mt-1">
-                        <span>{file.size || (isFolder ? 'Složka' : 'Dokument')}</span>
-                        <span>{file.modified}</span>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
+          <FileGridView
+            files={filteredFiles}
+            selectedIds={selectedIds}
+            cachedFileIds={cachedFileIds}
+            cachedFolderIds={cachedFolderIds}
+            effectiveOffline={effectiveOffline}
+            onSelect={handleToggleSelect}
+            onOpenFolder={handleOpenFolder}
+            onDownloadFile={downloadSingleFile}
+            onToggleCacheFile={handleToggleCacheFile}
+            onToggleCacheFolder={handleToggleCacheFolder}
+            onCopy={handleCopy}
+            onCut={handleCut}
+            onRename={handleStartRename}
+            onToggleStar={handleToggleStar}
+            onDelete={handleDeleteItem}
+          />
         ) : (
-          /* List View */
-          <div className="bg-card text-card-foreground border border-border rounded-xl overflow-hidden shadow-xs">
-            <div className="grid grid-cols-12 px-4 py-2.5 bg-muted border-b border-border text-xs font-semibold text-muted-foreground uppercase tracking-wider items-center">
-              <div className="col-span-1 flex items-center">
-                <button
-                  type="button"
-                  onClick={handleSelectAll}
-                  className="text-muted-foreground hover:text-foreground"
-                  title={isAllSelected ? 'Odznačit vše' : 'Označit vše'}
-                >
-                  {isAllSelected ? (
-                    <CheckSquare className="h-4 w-4 text-primary" />
-                  ) : isSomeSelected ? (
-                    <MinusSquare className="h-4 w-4 text-primary" />
-                  ) : (
-                    <Square className="h-4 w-4" />
-                  )}
-                </button>
-              </div>
-              <div className="col-span-5">Název</div>
-              <div className="col-span-2">Stav keše</div>
-              <div className="col-span-2">Velikost / Upraveno</div>
-              <div className="col-span-2 text-right">Akce</div>
-            </div>
-
-            <div className="divide-y divide-border">
-              {filteredFiles.map((file) => {
-                const isSelected = selectedIds.has(file.id);
-                const isFolder = file.type === 'folder';
-                const isCached = isFolder
-                  ? cachedFolderIds.has(file.id)
-                  : cachedFileIds.has(file.id);
-
-                return (
-                  <div
-                    key={file.id}
-                    onClick={() => {
-                      if (isFolder) {
-                        handleOpenFolder(file);
-                      } else if (file.webViewLink && !effectiveOffline) {
-                        window.open(file.webViewLink, '_blank');
-                      } else {
-                        downloadSingleFile(file);
-                      }
-                    }}
-                    className={`grid grid-cols-12 px-4 py-3 items-center hover:bg-muted/50 transition-colors group text-sm cursor-pointer ${
-                      isSelected ? 'bg-primary/5' : ''
-                    }`}
-                  >
-                    <div className="col-span-1 flex items-center">
-                      <button
-                        type="button"
-                        onClick={(e) => handleToggleSelect(file.id, e)}
-                        className={`p-1 rounded-md transition-colors ${
-                          isSelected
-                            ? 'text-primary'
-                            : 'text-muted-foreground/40 hover:text-muted-foreground'
-                        }`}
-                        title={isSelected ? 'Zrušit označení' : 'Označit položku'}
-                      >
-                        {isSelected ? (
-                          <CheckSquare className="h-4 w-4" />
-                        ) : (
-                          <Square className="h-4 w-4" />
-                        )}
-                      </button>
-                    </div>
-
-                    <div className="col-span-5 flex items-center gap-3 truncate">
-                      {renderIcon(file.type, 'h-5 w-5')}
-                      <span className="font-medium text-card-foreground truncate group-hover:text-primary transition-colors">
-                        {file.name}
-                      </span>
-                    </div>
-
-                    <div className="col-span-2 text-xs">
-                      {file.isOfflineQueue ? (
-                        <span className="inline-flex items-center gap-1 text-amber-500 font-medium">
-                          <Clock className="h-3 w-3" />
-                          <span>Čeká na odeslání</span>
-                        </span>
-                      ) : isCached ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
-                          <CheckCircle2 className="h-3 w-3" />
-                          <span>Uloženo offline</span>
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">Pouze online</span>
-                      )}
-                    </div>
-
-                    <div className="col-span-2 text-xs text-muted-foreground">
-                      {file.size ? `${file.size} • ` : ''}
-                      {file.modified}
-                    </div>
-
-                    <div className="col-span-2 flex items-center justify-end gap-1">
-                      {/* Offline cache button */}
-                      <button
-                        type="button"
-                        onClick={(e) =>
-                          isFolder
-                            ? handleToggleCacheFolder(file, e)
-                            : handleToggleCacheFile(file, e)
-                        }
-                        className={`p-1 rounded-md transition-colors ${
-                          isCached
-                            ? 'text-emerald-500 hover:text-emerald-600'
-                            : 'text-muted-foreground/40 hover:text-foreground hover:bg-muted'
-                        }`}
-                        title={
-                          isCached
-                            ? 'Uloženo v offline keši (kliknutím odeberete)'
-                            : 'Uložit do offline keše pro práci bez internetu'
-                        }
-                      >
-                        {isCached ? (
-                          <CheckCircle2 className="h-4 w-4" />
-                        ) : (
-                          <HardDriveDownload className="h-4 w-4" />
-                        )}
-                      </button>
-
-                      {!isFolder && (
-                        <button
-                          type="button"
-                          onClick={(e) => downloadSingleFile(file, e)}
-                          className="p-1 rounded-md text-muted-foreground/60 hover:text-primary hover:bg-muted"
-                          title="Stáhnout do počítače"
-                        >
-                          <Download className="h-4 w-4" />
-                        </button>
-                      )}
-
-                      {file.webViewLink && !effectiveOffline && (
-                        <a
-                          href={file.webViewLink}
-                          target="_blank"
-                          rel="noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="p-1 rounded-md text-muted-foreground/60 hover:text-primary hover:bg-muted"
-                          title="Otevřít na Disku"
-                        >
-                          <ExternalLink className="h-4 w-4" />
-                        </a>
-                      )}
-
-                      <button
-                        type="button"
-                        onClick={(e) => handleToggleStar(file.id, Boolean(file.starred), e)}
-                        className={`p-1 rounded-md hover:bg-muted ${
-                          file.starred
-                            ? 'text-amber-400 fill-amber-400'
-                            : 'text-muted-foreground/40 hover:text-muted-foreground'
-                        }`}
-                        title="Hvězdička"
-                      >
-                        <Star className={`h-4 w-4 ${file.starred ? 'fill-amber-400' : ''}`} />
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={(e) => handleDeleteItem(file.id, e)}
-                        className="p-1 rounded-md text-muted-foreground/40 hover:text-destructive hover:bg-muted"
-                        title="Smazat"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          <FileListView
+            files={filteredFiles}
+            selectedIds={selectedIds}
+            cachedFileIds={cachedFileIds}
+            cachedFolderIds={cachedFolderIds}
+            effectiveOffline={effectiveOffline}
+            onSelect={handleToggleSelect}
+            onSelectAll={handleSelectAll}
+            onOpenFolder={handleOpenFolder}
+            onDownloadFile={downloadSingleFile}
+            onToggleCacheFile={handleToggleCacheFile}
+            onToggleCacheFolder={handleToggleCacheFolder}
+            onCopy={handleCopy}
+            onCut={handleCut}
+            onRename={handleStartRename}
+            onToggleStar={handleToggleStar}
+            onDelete={handleDeleteItem}
+          />
         )}
       </main>
 
-      {/* Modal pro vytvoření nové složky (pouze název složky dle požadavku) */}
-      {showFolderModal && (
-        <div className="fixed inset-0 bg-background/80 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in">
-          <div className="bg-card text-card-foreground rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-border space-y-4">
-            <div className="flex items-center justify-between border-b border-border pb-3">
-              <div>
-                <h3 className="font-bold text-base text-card-foreground">Vytvořit novou složku</h3>
-                <p className="text-[11px] text-muted-foreground">
-                  ve složce {currentFolder?.name || ROOT_FOLDER_NAME}
-                </p>
-              </div>
-              <button
-                onClick={() => setShowFolderModal(false)}
-                className="text-muted-foreground hover:text-foreground p-1 rounded-lg"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
+      {/* Modals */}
+      <CreateFolderModal
+        isOpen={showFolderModal}
+        parentFolderName={currentFolder?.name || ROOT_FOLDER_NAME}
+        folderName={newFolderName}
+        isSaving={isSavingFolder}
+        onNameChange={setNewFolderName}
+        onSubmit={handleCreateFolder}
+        onClose={() => setShowFolderModal(false)}
+      />
 
-            <form onSubmit={handleCreateFolder} className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-card-foreground">Název složky:</label>
-                <Input
-                  type="text"
-                  placeholder="např. Podklady"
-                  value={newFolderName}
-                  onChange={(e) => setNewFolderName(e.target.value)}
-                  className="bg-background border-input text-foreground"
-                  autoFocus
-                  required
-                />
-              </div>
+      <RenameModal
+        item={renameTarget}
+        newName={renameInputValue}
+        isRenaming={isRenaming}
+        onNameChange={setRenameInputValue}
+        onSubmit={handleRenameSubmit}
+        onClose={() => setRenameTarget(null)}
+      />
 
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setShowFolderModal(false)}
-                  className="border-input text-foreground"
-                >
-                  Zrušit
-                </Button>
-                <Button
-                  type="submit"
-                  size="sm"
-                  disabled={isSavingFolder}
-                  className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold"
-                >
-                  {isSavingFolder ? 'Vytvářím...' : 'Vytvořit'}
-                </Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Modal pro řešení konfliktu (BOD 4: volba server vs klient) */}
-      {conflictModalItem && (
-        <div className="fixed inset-0 bg-background/80 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in">
-          <div className="bg-card text-card-foreground rounded-2xl max-w-md w-full p-6 shadow-2xl border border-border space-y-4">
-            <div className="flex items-center gap-3 border-b border-border pb-3">
-              <div className="h-10 w-10 rounded-xl bg-amber-500/10 text-amber-500 flex items-center justify-center shrink-0">
-                <AlertTriangle className="h-5 w-5" />
-              </div>
-              <div>
-                <h3 className="font-bold text-base text-card-foreground">Detekován konflikt souboru</h3>
-                <p className="text-xs text-muted-foreground">
-                  Soubor „{conflictModalItem.queueItem.name}“ byl upraven i na serveru.
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-3 text-xs">
-              <p className="text-muted-foreground">
-                Vyberte, kterou verzi chcete zachovat. Sloučení (merge) není vyžadováno:
-              </p>
-
-              {/* Server version card */}
-              <div className="p-3 bg-muted rounded-xl border border-border space-y-1">
-                <div className="font-semibold text-foreground flex items-center gap-1.5">
-                  <HardDrive className="h-3.5 w-3.5 text-blue-500" />
-                  <span>Verze na serveru (Google Disk)</span>
-                </div>
-                <div className="text-muted-foreground text-[11px] pl-5">
-                  Poslední změna:{' '}
-                  {new Date(conflictModalItem.serverFile.modifiedTime).toLocaleString('cs-CZ')}
-                </div>
-              </div>
-
-              {/* Client version card */}
-              <div className="p-3 bg-muted rounded-xl border border-border space-y-1">
-                <div className="font-semibold text-foreground flex items-center gap-1.5">
-                  <Clock className="h-3.5 w-3.5 text-amber-500" />
-                  <span>Verze z klienta (offline nahráno)</span>
-                </div>
-                <div className="text-muted-foreground text-[11px] pl-5">
-                  Velikost: {(conflictModalItem.queueItem.size / 1024).toFixed(0)} KB • Vytvořeno:{' '}
-                  {new Date(conflictModalItem.queueItem.createdAt).toLocaleString('cs-CZ')}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex flex-col sm:flex-row gap-2 pt-3 border-t border-border">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => handleResolveConflict('server')}
-                className="flex-1 text-xs border-input text-foreground h-9"
-              >
-                Použít soubor ze serveru
-              </Button>
-              <Button
-                type="button"
-                onClick={() => handleResolveConflict('client')}
-                className="flex-1 text-xs bg-primary hover:bg-primary/90 text-primary-foreground font-semibold h-9"
-              >
-                Použít soubor z klienta
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConflictModal
+        offlineConflict={conflictModalItem}
+        operationConflict={opConflict}
+        onResolveOffline={handleResolveOfflineConflict}
+        onResolveOperation={(choice) => opConflict?.onResolve(choice)}
+      />
     </div>
   );
 };
