@@ -30,6 +30,19 @@ const electronAPI = {
       ipcRenderer.removeListener('local-file-delete', handler);
     };
   },
+  simStart: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('sim:start'),
+  simStop: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('sim:stop'),
+  simInitCache: (clientId: string): Promise<any[]> => ipcRenderer.invoke('sim:init-cache', clientId),
+  simGetChanges: (clientId: string, sinceTimestamp: number): Promise<any[]> =>
+    ipcRenderer.invoke('sim:get-changes', { clientId, sinceTimestamp }),
+  simGetRecords: (ids: string[]): Promise<any[]> => ipcRenderer.invoke('sim:get-records', ids),
+  onSimServerLog: (callback: (data: { time: string; message: string }) => void) => {
+    const handler = (_event: any, data: any) => callback(data);
+    ipcRenderer.on('sim:server-log', handler);
+    return () => {
+      ipcRenderer.removeListener('sim:server-log', handler);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

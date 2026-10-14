@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import path from 'path';
 import fs from 'fs';
+import { registerSimulationIpc } from './simulationServer';
 
 let mainWindow: BrowserWindow | null = null;
 let watcher: fs.FSWatcher | null = null;
@@ -240,6 +241,7 @@ ipcMain.handle('rename-file-in-sync', (_event, { oldFilename, newFilename }: { o
 });
 
 app.whenReady().then(() => {
+  registerSimulationIpc(() => mainWindow);
   createWindow();
 
   app.on('activate', () => {

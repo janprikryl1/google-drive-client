@@ -1,6 +1,6 @@
 import { FC } from 'react';
 import { NavLink, Link } from 'react-router-dom';
-import { Home as HomeIcon, FolderOpen, LogIn, LogOut } from 'lucide-react';
+import { Home as HomeIcon, FolderOpen, LogIn, LogOut, Database } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/context/AuthContext';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -31,6 +31,20 @@ export const Navbar: FC = () => {
         >
           <HomeIcon className="h-4 w-4" />
           <span>Úvod</span>
+        </NavLink>
+
+        <NavLink
+          to="/simulation"
+          className={({ isActive }) =>
+            `flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+              isActive
+                ? 'bg-primary/10 text-primary font-semibold'
+                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+            }`
+          }
+        >
+          <Database className="h-4 w-4" />
+          <span>Simulace keše</span>
         </NavLink>
 
         {token && (

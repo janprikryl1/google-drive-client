@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/main.ts", "src/preload.ts", "src/types/electron.d.ts"]
+  "include": ["src/main.ts", "src/preload.ts", "src/simulationServer.ts", "src/types/electron.d.ts"]
 }

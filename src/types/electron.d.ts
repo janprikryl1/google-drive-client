@@ -10,6 +10,12 @@ export type IElectronAPI = {
   renameFileInSyncFolder: (oldFilename: string, newFilename: string) => Promise<{ success: boolean }>;
   onLocalFileChange: (callback: (data: { filename: string; base64Data: string; mimeType: string }) => void) => (() => void) | void;
   onLocalFileDelete: (callback: (data: { filename: string }) => void) => (() => void) | void;
+  simStart: () => Promise<{ ok: boolean }>;
+  simStop: () => Promise<{ ok: boolean }>;
+  simInitCache: (clientId: string) => Promise<any[]>;
+  simGetChanges: (clientId: string, sinceTimestamp: number) => Promise<any[]>;
+  simGetRecords: (ids: string[]) => Promise<any[]>;
+  onSimServerLog: (callback: (data: { time: string; message: string }) => void) => (() => void) | void;
 };
 
 declare global {

@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { Home } from '@/pages/Home';
 import { Login } from '@/pages/Login';
 import { Files } from '@/pages/Files';
+import { CacheSimulation } from '@/pages/CacheSimulation';
 
 const ProtectedRoute: FC<{ children: ReactNode }> = ({ children }) => {
   const { token, isLoading } = useAuth();
@@ -25,6 +26,7 @@ export const App: FC = () => {
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/login" element={<Login />} />
+            <Route path="/simulation" element={<CacheSimulation />} />
             <Route
               path="/files"
               element={
